@@ -16,11 +16,14 @@
 
 package org.springframework.beans;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+
+import org.springframework.util.AutoPopulatingList;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
@@ -155,7 +158,74 @@ public class BeanWrapperAutoGrowingTests {
 		wrapper.setAutoGrowCollectionLimit(2);
 		assertThatExceptionOfType(InvalidPropertyException.class).isThrownBy(() ->
 				wrapper.getPropertyValue("list[4]"))
-			.withRootCauseInstanceOf(IndexOutOfBoundsException.class);
+			.withMessageContainingAll(
+					"Invalid property 'list[4]'",
+					"Cannot get element with index 4 from List of size 0");
+	}
+
+	@Test
+	public void getPropertyValueSelfPopulatingListWorksWithinLimit() {
+		bean.setList(new SelfPopulatingList());
+		assertThat(wrapper.getPropertyValue("list[2]")).isInstanceOf(Bean.class);
+		assertThat(bean.getList())
+			.hasSize(3)
+			.allSatisfy(entry -> assertThat(entry).isInstanceOf(Bean.class));
+	}
+
+	@Test
+	public void getPropertyValueSelfPopulatingListFailsAgainstLimit() {
+		bean.setList(new SelfPopulatingList());
+		wrapper.setAutoGrowCollectionLimit(2);
+		assertThatExceptionOfType(InvalidPropertyException.class).isThrownBy(() ->
+				wrapper.getPropertyValue("list[4]"));
+	}
+
+	@Test
+	public void setPropertyValueSelfPopulatingListFailsAgainstLimitForNestedPath() {
+		bean.setList(new SelfPopulatingList());
+		wrapper.setAutoGrowCollectionLimit(2);
+		assertThatExceptionOfType(InvalidPropertyException.class).isThrownBy(() ->
+				wrapper.setPropertyValue("list[4].prop", "test"));
+	}
+
+	@Test  // gh-37634
+	public void getPropertyValueSelfPopulatingRawListWorksWithinLimit() {
+		bean.setRawList(new SelfPopulatingList());
+		wrapper.setAutoGrowCollectionLimit(3);
+		assertThat(wrapper.getPropertyValue("rawList[2]")).isInstanceOf(Bean.class);
+		List<?> list = bean.getRawList();
+		assertThat(list).hasSize(3).allSatisfy(entry -> assertThat(entry).isInstanceOf(Bean.class));
+	}
+
+	@Test  // gh-37634
+	public void getPropertyValueSelfPopulatingRawListFailsWithoutAutoGrow() {
+		bean.setRawList(new SelfPopulatingList());
+		wrapper.setAutoGrowNestedPaths(false);
+		assertThatExceptionOfType(InvalidPropertyException.class).isThrownBy(() ->
+				wrapper.getPropertyValue("rawList[2]"))
+			.withMessageContaining("Cannot get element with index 2 from List of size 0");
+		List<?> list = bean.getRawList();
+		assertThat(list).isEmpty();
+	}
+
+	@Test  // gh-37634
+	public void getPropertyValueSelfPopulatingRawListFailsAgainstLimit() {
+		bean.setRawList(new SelfPopulatingList());
+		wrapper.setAutoGrowCollectionLimit(2);
+		assertThatExceptionOfType(InvalidPropertyException.class).isThrownBy(() ->
+				wrapper.getPropertyValue("rawList[4]"))
+			.withMessageContaining("Cannot get element with index 4 from List of size 0");
+		List<?> list = bean.getRawList();
+		assertThat(list).isEmpty();
+	}
+
+	@Test  // gh-37634
+	public void setPropertyValueAutoPopulatingRawListForNestedPath() {
+		bean.setRawList(new AutoPopulatingList<>(Bean.class));
+		wrapper.setPropertyValue("rawList[1].prop", "test");
+		List<?> list = bean.getRawList();
+		assertThat(list).hasSize(2).element(1)
+			.isInstanceOfSatisfying(Bean.class, element -> assertThat(element.getProp()).isEqualTo("test"));
 	}
 
 	@Test
@@ -166,9 +236,9 @@ public class BeanWrapperAutoGrowingTests {
 	}
 
 	@Test
-	public void getPropertyValueAutoGrowListNotParameterized() {
+	public void getPropertyValueAutoGrowRawList() {
 		assertThatExceptionOfType(InvalidPropertyException.class).isThrownBy(() ->
-				wrapper.getPropertyValue("listNotParameterized[0]"));
+				wrapper.getPropertyValue("rawList[0]"));
 	}
 
 	@Test
@@ -208,7 +278,7 @@ public class BeanWrapperAutoGrowingTests {
 
 		private List<List<Bean>> multiList;
 
-		private List listNotParameterized;
+		private List rawList;
 
 		private Map<String, Bean> map;
 
@@ -276,12 +346,12 @@ public class BeanWrapperAutoGrowingTests {
 			this.nestedNoConstructor = nestedNoConstructor;
 		}
 
-		public List getListNotParameterized() {
-			return listNotParameterized;
+		public List getRawList() {
+			return rawList;
 		}
 
-		public void setListNotParameterized(List listNotParameterized) {
-			this.listNotParameterized = listNotParameterized;
+		public void setRawList(List rawList) {
+			this.rawList = rawList;
 		}
 
 		public Map<String, Bean> getMap() {
@@ -297,6 +367,27 @@ public class BeanWrapperAutoGrowingTests {
 	public static class NestedNoDefaultConstructor {
 
 		private NestedNoDefaultConstructor() {
+		}
+	}
+
+
+	/**
+	 * A {@link List} implementation that creates elements on demand in {@link #get(int)}
+	 * instead of throwing {@link IndexOutOfBoundsException} for out-of-range indexes.
+	 *
+	 * <p>Used to verify that {@link BeanWrapperImpl} delegates to {@link List#get(int)}
+	 * for out-of-bounds indexes only if auto-growing is enabled and the index is
+	 * within the configured auto-grow limit.
+	 */
+	@SuppressWarnings("serial")
+	private static class SelfPopulatingList extends ArrayList<Bean> {
+
+		@Override
+		public Bean get(int index) {
+			while (size() <= index) {
+				add(new Bean());
+			}
+			return super.get(index);
 		}
 	}
 

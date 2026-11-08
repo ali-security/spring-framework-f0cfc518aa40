@@ -37,6 +37,8 @@ import java.util.Set;
 import java.util.TreeSet;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import org.springframework.beans.BeanWrapper;
 import org.springframework.beans.InvalidPropertyException;
@@ -64,6 +66,7 @@ import org.springframework.format.support.DefaultFormattingConversionService;
 import org.springframework.format.support.FormattingConversionService;
 import org.springframework.lang.Nullable;
 import org.springframework.tests.sample.beans.BeanWithObjectProperty;
+import org.springframework.util.AutoPopulatingList;
 import org.springframework.util.StringUtils;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -1911,6 +1914,39 @@ class DataBinderTests {
 			.satisfies(ex -> assertThat(ex.getRootCause()).isInstanceOf(IndexOutOfBoundsException.class));
 	}
 
+	@ParameterizedTest(name = "directFieldAccess = {0}")  // gh-37634
+	@ValueSource(booleans = {false, true})
+	void autoGrowSelfPopulatingRawListWithinDefaultLimit(boolean directFieldAccess) {
+		RawListForm form = new RawListForm();
+		DataBinder binder = new DataBinder(form, "form");
+		if (directFieldAccess) {
+			binder.initDirectFieldAccess();
+		}
+		MutablePropertyValues mpvs = new MutablePropertyValues();
+		mpvs.add("items[255].name", "test");
+		binder.bind(mpvs);
+
+		List<?> items = form.getItems();
+		assertThat(items).hasSize(256).element(255)
+			.isInstanceOfSatisfying(TestBean.class, bean -> assertThat(bean.getName()).isEqualTo("test"));
+	}
+
+	@Test  // gh-37634
+	void autoGrowSelfPopulatingRawListBeyondDefaultLimit() {
+		// Bean property access only: DirectFieldBindingResult does not apply the
+		// DataBinder's auto-grow collection limit in this version.
+		RawListForm form = new RawListForm();
+		DataBinder binder = new DataBinder(form, "form");
+		MutablePropertyValues mpvs = new MutablePropertyValues();
+		mpvs.add("items[256].name", "test");
+
+		assertThatExceptionOfType(InvalidPropertyException.class).isThrownBy(() ->
+				binder.bind(mpvs))
+			.withMessageContaining("Cannot get element with index 256 from List of size 0");
+		List<?> items = form.getItems();
+		assertThat(items).isEmpty();
+	}
+
 	@Test
 	void nestedGrowingList() {
 		Form form = new Form();
@@ -2271,6 +2307,21 @@ class DataBinderTests {
 
 		public Map<String, Object> getF() {
 			return f;
+		}
+	}
+
+
+	@SuppressWarnings("rawtypes")
+	private static class RawListForm {
+
+		private List items = new AutoPopulatingList<>(TestBean.class);
+
+		public List getItems() {
+			return this.items;
+		}
+
+		public void setItems(List items) {
+			this.items = items;
 		}
 	}
 
